@@ -171,6 +171,8 @@ static int open_tun(const char *dev)
 {
 	struct ifreq ifr = {};
 	int fd, err;
+	int ret;
+	int flags;
 
 	if ((fd = open("/dev/net/tun", O_RDWR)) < 0)
 		return fd;
@@ -187,6 +189,11 @@ static int open_tun(const char *dev)
 		close(fd);
 		return err;
 	}
+	flags = fcntl(fd, F_GETFL);
+	assert(0 <= flags);
+	flags |= O_NONBLOCK;
+	ret = fcntl(fd, F_SETFL, flags);
+	assert(-1 != ret);
 	return fd;
 }
 
