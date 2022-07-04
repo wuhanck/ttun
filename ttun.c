@@ -18,6 +18,7 @@ The above command creates a TUN device with the name tun0 and assigns the user
 #include <stdint.h>
 #include <assert.h>
 #include <signal.h>
+#include <errno.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -29,14 +30,14 @@ The above command creates a TUN device with the name tun0 and assigns the user
 #include <linux/if_tun.h>
 
 #define LOG(...) \
-	(void)fprintf(stderr, __VA_ARGS__)
+	fprintf(stderr, __VA_ARGS__)
 
 /* MTU_MAX supported */
 #define MTU_MAX 9216
-#define CHNL_MAX 4
+#define CHNL_MAX 2
 
 /* main event loop */
-static struct event_base *ev_base;
+static struct event_base *ev_bases[CHNL_MAX];
 
 /* events for reading and writing TUN interface */
 static struct event *ev_treads[CHNL_MAX];
@@ -47,8 +48,8 @@ static struct event *ev_swrites[CHNL_MAX];
 static struct event *ev_sreads[CHNL_MAX];
 
 /* Descriptors the TUN interface and UDP socket */
-static int tun;
-static int sock;
+static int tuns[CHNL_MAX];
+static int socks[CHNL_MAX];
 
 struct Buffer {
 	ssize_t size;
@@ -61,32 +62,18 @@ static struct Buffer ins[CHNL_MAX];
 /* buffer for data wrote to TUN */
 static struct Buffer outs[CHNL_MAX];
 
-/* Catch a signal and quit the event loop */
-static void event_sig_cb(evutil_socket_t fd, short flags, void *cls)
-{
-	int sig = fd;
-
-	switch (fd) {
-	case SIGINT:
-	case SIGTERM:
-		break;
-	default:
-		assert(0);
-	}
-	event_base_loopexit(ev_base, 0);
-}
-
 static struct sockaddr_in destaddr;
 struct sockaddr_in bindaddr;
 uint16_t destport;
 uint16_t bindport;
 
 /* read from the TUN and schedule a write to the sock */
-static void ev_tread_cb(evutil_socket_t tun, short flags, void *cls)
+static void ev_tread_cb(evutil_socket_t , short flags, void *cls)
 {
 	unsigned chnl = (uintptr_t)cls;
 	struct event *ev_tread = ev_treads[chnl];
 	struct event *ev_swrite = ev_swrites[chnl];
+	int tun = tuns[chnl];
 	struct Buffer *in = &ins[chnl];
 
 	assert(chnl < CHNL_MAX);
@@ -94,8 +81,9 @@ static void ev_tread_cb(evutil_socket_t tun, short flags, void *cls)
 	assert(0 != (EV_READ & flags));
 
 	in->size = read(tun, &in->data[0], sizeof(in->data));
+	LOG("tun read chnl: %d, size: %zd\n",  chnl, in->size);
 	if (in->size <= 0) {
-		LOG("tun read ret: %zd\n",  in->size);
+		LOG("tun read ret: %zd, errno: %d\n",  in->size, errno);
 		event_add(ev_tread, 0);
 		return;
 	}
@@ -104,11 +92,12 @@ static void ev_tread_cb(evutil_socket_t tun, short flags, void *cls)
 	event_add(ev_swrite, 0);
 }
 
-static void ev_swrite_cb(evutil_socket_t fd, short flags, void *cls)
+static void ev_swrite_cb(evutil_socket_t , short flags, void *cls)
 {
 	ssize_t ret;
 	unsigned chnl = (uintptr_t)cls;
 	struct event *ev_tread = ev_treads[chnl];
+	int sock = socks[chnl];
 	struct Buffer *in = &ins[chnl];
 
 	assert(chnl < CHNL_MAX);
@@ -117,17 +106,18 @@ static void ev_swrite_cb(evutil_socket_t fd, short flags, void *cls)
 
 	ret = sendto(sock, &in->data[0], in->size, 0, (const struct sockaddr *)&destaddr, sizeof(destaddr));
 	if (-1 == ret)
-		LOG("sock send ret: %zd\n", ret);
+		LOG("sock send ret: %zd, errno: %d\n", ret, errno);
 	/* resume reading from TUN */
 	event_add(ev_tread, 0);
 }
 
 /* read data from the sock and schedule a write to TUN */
-static void ev_sread_cb(evutil_socket_t tun, short flags, void *cls)
+static void ev_sread_cb(evutil_socket_t , short flags, void *cls)
 {
 	unsigned chnl = (uintptr_t)cls;
 	struct event *ev_sread = ev_sreads[chnl];
 	struct event *ev_twrite = ev_twrites[chnl];
+	int sock = socks[chnl];
 	struct Buffer *out = &outs[chnl];
 
 	assert(chnl < CHNL_MAX);
@@ -136,7 +126,7 @@ static void ev_sread_cb(evutil_socket_t tun, short flags, void *cls)
 
 	out->size = recvfrom(sock, &out->data[0], sizeof(out->data), 0, 0, 0);
 	if (out->size <= 0 || out->size == sizeof(out->data)) {
-		LOG("sock read ret:%zd\n", out->size);
+		LOG("sock read ret: %zd, errno: %d\n", out->size, errno);
 		event_add(ev_sread, 0);
 		return;
 	}
@@ -144,11 +134,12 @@ static void ev_sread_cb(evutil_socket_t tun, short flags, void *cls)
 	event_add(ev_twrite, 0);
 }
 
-static void ev_twrite_cb(evutil_socket_t fd, short flags, void *cls)
+static void ev_twrite_cb(evutil_socket_t , short flags, void *cls)
 {
 	ssize_t ret;
 	unsigned chnl = (uintptr_t)cls;
 	struct event *ev_sread= ev_sreads[chnl];
+	int tun = tuns[chnl];
 	struct Buffer *out = &outs[chnl];
 
 	assert(chnl < CHNL_MAX);
@@ -157,7 +148,7 @@ static void ev_twrite_cb(evutil_socket_t fd, short flags, void *cls)
 
 	ret = write(tun, &out->data[0], out->size);
 	if (ret <= 0)
-		LOG("tun write ret: %zd", ret);
+		LOG("tun write ret: %zd, errno: %d\n", ret, errno);
 	/* resume reading from socket */
 	event_add(ev_sread, 0);
 }
@@ -181,8 +172,9 @@ static int open_tun(const char *dev)
 	 *        IFF_TAP   - TAP device
 	 *
 	 *        IFF_NO_PI - Do not provide packet information
+	 *        IFF_MULTI_QUEUE - Create a queue of multiqueue device
 	*/
-	ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
+	ifr.ifr_flags = IFF_TUN | IFF_NO_PI | IFF_MULTI_QUEUE;
 	strncpy(ifr.ifr_name, dev, IFNAMSIZ);
 
 	if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0) {
@@ -224,15 +216,18 @@ static int create_udpsock(const char *bindipstr, const char *bindportstr,
 		return -4;
 	}
 	sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (sock < 0)
-		return sock;
+	assert(0 < sock);
+	int enable = 1;
+	setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, (const char*)&enable, sizeof(enable));
 	destaddr.sin_family = AF_INET;
 	bindaddr.sin_family = AF_INET;
 	destaddr.sin_port = htons(destport);
 	bindaddr.sin_port = htons(bindport);
 	ret = bind(sock, (const struct sockaddr *)&bindaddr, sizeof(bindaddr));
-	LOG("sock bind: %d\n", ret);
-	assert(0 == ret);
+	if (ret < 0) {
+		LOG("sock bind: %d, errno: %d\n", ret, errno);
+		return -5;
+	}
 	/* make socket non blocking */
 	flags = fcntl(sock, F_GETFL);
 	assert(0 <= flags);
@@ -263,10 +258,7 @@ int main (int argc, const char *argv[])
 	bindportstr = argv[3];
 	destipstr = argv[4];
 	destportstr = argv[5];
-	tun = -1;
-	sock = -1;
-	ev_sigint = 0;
-	ev_sigterm = 0;
+
 	/* initialize libevent */
 	event_enable_debug_mode();
 	ev_cfg = event_config_new();
@@ -277,33 +269,35 @@ int main (int argc, const char *argv[])
 	/* EV_FEATURE_FDS: both sockets and files can be used */
 	ret = event_config_require_features(ev_cfg, EV_FEATURE_FDS);
 	assert(0 == ret);
-	ev_base = event_base_new_with_config(ev_cfg);
-	assert(0 != ev_base);
-	/* event for catching interrupt signal */
-	ev_sigint = evsignal_new(ev_base, SIGINT, &event_sig_cb, 0);
-	ret = evsignal_add(ev_sigint, 0);
-	assert(0 == ret);
-	ev_sigterm = evsignal_new(ev_base, SIGTERM, &event_sig_cb, 0);
-	ret = evsignal_add(ev_sigterm, 0);
-	assert(0 == ret);
-	/* create the UDP sock */
-	sock = create_udpsock(bindipstr, bindportstr, destipstr, destportstr);
-	if (sock < 0) {
-		ret = 2;
-		goto cleanup;
+
+	for (int i = 0; i != CHNL_MAX; i++) {
+		ev_bases[i] = event_base_new_with_config(ev_cfg);
+		assert(0 != ev_bases[i]);
 	}
-	tun = open_tun(tun_name);
-	if (tun < 0) {
-		ret =3;
-		goto cleanup;
+
+	/* create the UDP sock */
+	for (int i = 0; i != CHNL_MAX; i++) {
+		socks[i] = create_udpsock(bindipstr, bindportstr, destipstr, destportstr);
+		if (socks[i] < 0) {
+			ret = 2;
+			goto cleanup;
+		}
+	}
+
+	for (int i = 0; i != CHNL_MAX; i++) {
+		tuns[i] = open_tun(tun_name);
+		if (tuns[i] < 0) {
+			ret =3;
+			goto cleanup;
+		}
 	}
 
 	for (int i = 0; i != CHNL_MAX; i++) {
 		void *cls = (void *)(uintptr_t)i;
-		ev_treads[i] = event_new(ev_base, tun, EV_READ, &ev_tread_cb, cls);
-		ev_sreads[i] = event_new(ev_base, sock, EV_READ, &ev_sread_cb, cls);
-		ev_twrites[i] = event_new(ev_base, tun, EV_WRITE, &ev_twrite_cb, cls);
-		ev_swrites[i] = event_new(ev_base, sock, EV_WRITE, &ev_swrite_cb, cls);
+		ev_treads[i] = event_new(ev_bases[i], tuns[i], EV_READ, &ev_tread_cb, cls);
+		ev_sreads[i] = event_new(ev_bases[i], socks[i], EV_READ, &ev_sread_cb, cls);
+		ev_twrites[i] = event_new(ev_bases[i], tuns[i], EV_WRITE, &ev_twrite_cb, cls);
+		ev_swrites[i] = event_new(ev_bases[i], socks[i], EV_WRITE, &ev_swrite_cb, cls);
 		assert(0 != ev_treads[i]);
 		assert(0 != ev_sreads[i]);
 		assert(0 != ev_twrites[i]);
@@ -314,17 +308,17 @@ int main (int argc, const char *argv[])
 		ret = event_add(ev_sreads[i], 0);
 		assert(0 == ret);
 	}
-	ret = event_base_dispatch(ev_base);
+	ret = event_base_dispatch(ev_bases[1]);
 	assert(0 == ret);
 
 cleanup:
-	if (0 <= tun)
-		close(tun);
-	if (0 <= sock)
-		close(sock);
+	for (int i = 0; i != CHNL_MAX; i++) {
+		if (0 < tuns[i])
+			close(tuns[i]);
+		if (0 < socks[i])
+			close(socks[i]);
+	}
 #define event_free_not_null(ev) if (ev) event_free(ev)
-	event_free_not_null(ev_sigint);
-	event_free_not_null(ev_sigterm);
 	for (int i = 0; i != CHNL_MAX; i++) {
 		event_free_not_null(ev_treads[i]);
 		event_free_not_null(ev_twrites[i]);
@@ -332,7 +326,8 @@ cleanup:
 		event_free_not_null(ev_swrites[i]);
 	}
 #undef event_free_not_null
-	event_base_free(ev_base);
+	for (int i = 0; i != CHNL_MAX; i++)
+		event_base_free(ev_bases[i]);
 	event_config_free(ev_cfg);
 	return ret;
 }
