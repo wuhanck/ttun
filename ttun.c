@@ -24,6 +24,7 @@ The above command creates a TUN device with the name tun0 and assigns the user
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <event.h>
 #include <linux/if.h>
@@ -237,6 +238,17 @@ static int create_udpsock(const char *bindipstr, const char *bindportstr,
 	return sock;
 }
 
+pthread_t ts[CHNL_MAX];
+static void *chnl_handler(void *data) {
+	unsigned chnl = (uintptr_t)data;
+	assert(chnl < CHNL_MAX);
+
+	int ret = event_base_dispatch(ev_bases[chnl]);
+	LOG("event-base-dispatch ret: %d\n", ret);
+
+	pthread_exit(0);
+}
+
 int main (int argc, const char *argv[])
 {
 	struct event_config *ev_cfg;
@@ -308,9 +320,13 @@ int main (int argc, const char *argv[])
 		ret = event_add(ev_sreads[i], 0);
 		assert(0 == ret);
 	}
-	ret = event_base_dispatch(ev_bases[1]);
-	assert(0 == ret);
-
+	for (int i = 0; i != CHNL_MAX; i++) {
+		ret = pthread_create(&ts[i], 0, chnl_handler, (void *)(uintptr_t)i);
+		assert(0 == ret);
+	}
+	for (int i = 0; i != CHNL_MAX; i++) {
+		pthread_join(ts[i], 0);
+	}
 cleanup:
 	for (int i = 0; i != CHNL_MAX; i++) {
 		if (0 < tuns[i])
