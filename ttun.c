@@ -218,7 +218,7 @@ static int create_udpsock(const char *bindipstr, const char *bindportstr,
 		return -4;
 	}
 	sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	assert(0 < sock);
+	assert(0 <= sock);
 	int enable = 1;
 	setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, (const char*)&enable, sizeof(enable));
 	destaddr.sin_family = AF_INET;
@@ -332,9 +332,9 @@ int main (int argc, const char *argv[])
 	}
 cleanup:
 	for (int i = 0; i != CHNL_MAX; i++) {
-		if (0 < tuns[i])
+		if (0 <= tuns[i])
 			close(tuns[i]);
-		if (0 < socks[i])
+		if (0 <= socks[i])
 			close(socks[i]);
 	}
 #define event_free_not_null(ev) if (ev) event_free(ev)
