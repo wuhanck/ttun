@@ -82,7 +82,7 @@ static void ev_tread_cb(evutil_socket_t _, short flags, void *cls)
 	assert(0 != (EV_READ & flags));
 
 	in->size = read(tun, &in->data[0], sizeof(in->data));
-	//LOG("tun read chnl: %d, size: %zd\n", chnl, in->size);
+	LOG("tun read chnl: %d, size: %zd\n", chnl, in->size);
 	if (in->size <= 0) {
 		LOG("tun read ret: %zd, errno: %d\n", in->size, errno);
 		event_add(ev_tread, 0);
@@ -106,6 +106,7 @@ static void ev_swrite_cb(evutil_socket_t _, short flags, void *cls)
 	assert(0 != (EV_WRITE & flags));
 
 	ret = sendto(sock, &in->data[0], in->size, 0, (const struct sockaddr *)&destaddr, sizeof(destaddr));
+	LOG("sock sendto chnl: %d, ret: %zd\n", chnl, ret);
 	if (-1 == ret)
 		LOG("sock send ret: %zd, errno: %d\n", ret, errno);
 	/* resume reading from TUN */
@@ -126,7 +127,7 @@ static void ev_sread_cb(evutil_socket_t _, short flags, void *cls)
 	assert(0 != (EV_READ & flags));
 
 	out->size = recvfrom(sock, &out->data[0], sizeof(out->data), 0, 0, 0);
-	//LOG("sock read chnl: %d, size: %zd\n", chnl, out->size);
+	LOG("sock recvfrom chnl: %d, size: %zd\n", chnl, out->size);
 	if (out->size <= 0 || out->size == sizeof(out->data)) {
 		LOG("sock read ret: %zd, errno: %d\n", out->size, errno);
 		event_add(ev_sread, 0);
@@ -149,6 +150,7 @@ static void ev_twrite_cb(evutil_socket_t _, short flags, void *cls)
 	assert(0 != (EV_WRITE & flags));
 
 	ret = write(tun, &out->data[0], out->size);
+	LOG("tun write chnl: %d, ret: %zd\n", chnl, ret);
 	if (ret <= 0)
 		LOG("tun write ret: %zd, errno: %d\n", ret, errno);
 	/* resume reading from socket */
