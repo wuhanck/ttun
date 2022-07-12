@@ -169,8 +169,10 @@ static int open_tun(const char *dev)
 	int ret;
 	int flags;
 
-	if ((fd = open("/dev/net/tun", O_RDWR)) < 0)
+	if ((fd = open("/dev/net/tun", O_RDWR)) < 0) {
+		LOG("open /dev/net/tun failed: %d, errno: %d\n", fd, errno);
 		return fd;
+	}
 
 	/* Flags: IFF_TUN   - TUN device (no Ethernet headers)
 	 *        IFF_TAP   - TAP device
@@ -182,6 +184,7 @@ static int open_tun(const char *dev)
 	strncpy(ifr.ifr_name, dev, IFNAMSIZ);
 
 	if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0) {
+		LOG("ioctl /dev/net/tun failed: %d, errno: %d\n", err, errno);
 		close(fd);
 		return err;
 	}
